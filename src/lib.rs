@@ -1,40 +1,96 @@
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
+//! # QOI Encoder/Decoder
+//! This library implements a minimal QOI image format encoder and decoder. Read more at [https://qoiformat.org](https://qoiformat.org).
+//! The interface uses row-major packed arrays of bytes, so buffers must have the layout:
+//! ```
+//! /*
+//! [R, G, B (, A)], ..., width,
+//! ...,
+//! ...,
+//! ...,
+//! height
+//! 
+//! Total number of bytes: channels * width * height
+//! */
+//! ```
+//! 
+//! To encode an image, create a [`QOIHeader`] matching the input buffer and use [`encode()`].
+//! To decode an image, use [`decode()`] on the input byte array.
+
+/// The header defines the size, number of color channels, and color space of the image.
+/// 
+/// Create a new header like so:
+/// ```
+/// use qoi_format::*;
+/// 
+/// let header = QOIHeader::new()
+///     .size(256, 256)
+///     .channels(3) //Must be 3 or 4
+///     .colorspace(LINEAR) //Constants for convenience, equivalent to below
+///     .colorspace(0); //0 = SRGB, 1 = All linear. Does not affect encoding
+/// ```
+#[derive(Clone, Copy)]
 pub struct QOIHeader {
-    magic: [u8; 4], //Magic bytes 'qoif'
     width: u32,
     height: u32,
     channels: u8, //3 = RGB, 4 = RGBA
     colorspace: u8, //0 = SRGB, 1 = all channels linear
 }
 
+const MAGIC_BYTES: [u8; 4] = *b"qoif";
+
+/// Use as parameter to [`QOIHeader::channels`].
+pub const SRGB: u8 = 0;
+/// Use as parameter to [`QOIHeader::channels`].
+pub const LINEAR: u8 = 1;
+
 impl QOIHeader {
+    /// Create a new header with no specified parameters. This *will* encode/decode, but a 0x0 pixel image likely won't play well with most readers.
     pub fn new() -> QOIHeader {
         QOIHeader {
-            magic: *b"qoif",
             width: 0,
             height: 0,
             channels: 3,
             colorspace: 0,
         }
     }
+    /// Set the width and height of the image.
     pub fn size(mut self, width: u32, height: u32) -> QOIHeader {
         self.width = width;
         self.height = height;
         self
     }
+    /// Set the number of channels. Must be 3 or 4, for RGB or RGBA.
+    /// 
+    /// This must match the buffer:
+    /// If a buffer of RGB pixels is encoded with an RGBA header, the encoding will simply fail.
+    /// **If a buffer of RGBA pixels is encoded with an RGB header, encoding will succeed with a malformed output!**
+    /// 
+    /// # Panics
+    /// 
+    /// Function panics if `channels` is not 3 or 4
     pub fn channels(mut self, channels: u8) -> QOIHeader {
+        if channels != 3 && channels != 4 {
+            panic!("Invalid nr of channels");
+        }
         self.channels = channels;
         self
     }
+    /// Set the colorspace. Must be 0 or 1, for SRGB or all linear channels.
+    /// 
+    /// # Panics
+    /// 
+    /// Function panics if `colorspace` is not 0 or 1
     pub fn colorspace(mut self, colorspace: u8) -> QOIHeader {
+        if colorspace != 0 && colorspace != 1 {
+            panic!("Invalid colorspace");
+        }
         self.colorspace = colorspace;
         self
     }
 
     fn to_be_bytes(&self) -> [u8; 14] {
         let mut out_bytes = [0; 14];
-        self.magic.iter().enumerate().for_each(|(i, byte)| {out_bytes[i] = *byte}); //Write magic value
+        MAGIC_BYTES.iter().enumerate().for_each(|(i, byte)| {out_bytes[i] = *byte}); //Write magic value
         self.width.to_be_bytes().iter().enumerate().for_each(|(i, byte)| {out_bytes[i+4] = *byte}); //Write width
         self.height.to_be_bytes().iter().enumerate().for_each(|(i, byte)| {out_bytes[i+8] = *byte}); //Write height
         out_bytes[12] = self.channels.to_be();
@@ -54,6 +110,9 @@ const QOI_OP_RGBA : u8 = 0b11111111;
 #[derive(Clone, Copy, PartialEq)]
 struct RGBA(u8, u8, u8, u8);
 
+/// Returns a vector of bytes encoded in the QOI image format.
+/// # Panics
+/// Funtion panics if the buffer has fewer than `width * height * channels` bytes.
 pub fn encode(buf: &[u8], header: QOIHeader) -> Vec<u8> {
     let img_length: usize = (header.width * header.height) as usize;
     let mut prev_pixel = RGBA(0,0,0,255);
@@ -168,19 +227,23 @@ pub fn encode(buf: &[u8], header: QOIHeader) -> Vec<u8> {
 }
 
 
-
+/// Returns a vector of bytes decoded from the QOI image format if the file conforms to the format specification, error otherwise.
 pub fn decode(buf: &[u8]) -> Result<(QOIHeader, Vec<u8>),()> {
     let mut decoded_bytes = Vec::new();
     let header_bytes = if let Some(v) = buf.get(0..14) {v} else {return Err(())};
     
+    //Verify magic bytes
+    let magic_bytes: [u8; 4] = header_bytes.get(0..4).unwrap().try_into().unwrap();
+    if magic_bytes != *b"qoif" {
+        return Err(())
+    }
+    //Verify tail bytes as well
+    let tail_bytes: [u8; 8] = buf.get((buf.len()-8)..buf.len()).unwrap().try_into().unwrap();
+    if u64::from_be_bytes(tail_bytes) != 1 {
+        return Err(())
+    }
+
     let header = QOIHeader {
-        magic: {
-            let magic_bytes: [u8; 4] = header_bytes.get(0..4).unwrap().try_into().unwrap();
-            if magic_bytes != *b"qoif" {
-                return Err(())
-            }
-            magic_bytes
-        },
         width: {
             let width_bytes = header_bytes.get(4..8).unwrap().try_into().unwrap();
             let width = u32::from_be_bytes(width_bytes);
@@ -195,11 +258,7 @@ pub fn decode(buf: &[u8]) -> Result<(QOIHeader, Vec<u8>),()> {
         colorspace: u8::from_be(*header_bytes.get(13).unwrap()),
     };
 
-    //Verify tail bytes as well
-    let tail_bytes: [u8; 8] = buf.get((buf.len()-8)..buf.len()).unwrap().try_into().unwrap();
-    if u64::from_be_bytes(tail_bytes) != 1 {
-        return Err(())
-    }
+    
 
     let mut prev_pixel = RGBA(0,0,0,255);
     let mut current_pixel = prev_pixel;
@@ -351,6 +410,6 @@ mod tests {
 
         let image_buffer: image::RgbaImage = flat_samples.try_into_buffer().unwrap();
 
-        image_buffer.save("decode_test_images/dice.png").unwrap();
+        image_buffer.save("small_test_decoded.png").unwrap();
     }
 }
