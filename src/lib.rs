@@ -30,10 +30,10 @@
 /// ```
 #[derive(Clone, Copy)]
 pub struct QOIHeader {
-    width: u32,
-    height: u32,
-    channels: u8, //3 = RGB, 4 = RGBA
-    colorspace: u8, //0 = SRGB, 1 = all channels linear
+    pub width: u32,
+    pub height: u32,
+    pub channels: u8, //3 = RGB, 4 = RGBA
+    pub colorspace: u8, //0 = SRGB, 1 = all channels linear
 }
 
 const MAGIC_BYTES: [u8; 4] = *b"qoif";
@@ -378,7 +378,7 @@ fn last_six_bits(num: u8) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{QOIHeader, encode, decode};
     use std::io::{Write, Read};
     use std::fs;
     use image;

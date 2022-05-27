@@ -1,5 +1,5 @@
 [package]
-name = "qoi_format"
+name = "qoi_rust"
 version = "0.1.0"
 edition = "2021"
 
